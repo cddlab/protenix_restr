@@ -601,15 +601,20 @@ def build_ligand(entity_info: dict) -> dict:
         if len(ccd_code) == 1:
             try:
                 rdkit_mol = ccd.get_component_rdkit_mol(ccd_code[0])
-                if rdkit_mol is not None:
+                if rdkit_mol is not None and hasattr(rdkit_mol, "atom_map"):
                     mol_noH = AllChem.RemoveHs(rdkit_mol, sanitize=False)
-                    # Build atom_name → index map for mol_noH
-                    noH_name_to_idx = {}
-                    for i, atom in enumerate(mol_noH.GetAtoms()):
-                        try:
-                            noH_name_to_idx[atom.GetProp("name").strip()] = i
-                        except KeyError:
-                            pass
+                    # rdkit_mol.atom_map: {atom_name: index_in_original_mol_with_H}
+                    # After RemoveHs, heavy atoms are renumbered; build the mapping.
+                    heavy_orig_indices = [
+                        i for i, a in enumerate(rdkit_mol.GetAtoms())
+                        if a.GetAtomicNum() != 1
+                    ]
+                    orig_to_noH = {orig: noH for noH, orig in enumerate(heavy_orig_indices)}
+                    noH_name_to_idx = {
+                        name: orig_to_noH[orig_idx]
+                        for name, orig_idx in rdkit_mol.atom_map.items()
+                        if orig_idx in orig_to_noH
+                    }
                     # Reorder mol_noH to match atom_array.atom_name order.
                     # Biotite atom names may have trailing spaces; strip both sides.
                     aa_names = [name.strip() for name in atom_array.atom_name]

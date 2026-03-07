@@ -557,7 +557,7 @@ class Protenix(nn.Module):
         if "ref_conformer_restraint" in input_feature_dict:
             from protenix.model.restraints.combined_restraints import CombinedRestraints
             combined_restr = CombinedRestraints.get_instance()
-            combined_restr.setup_site(input_feature_dict)
+            combined_restr.setup_site(input_feature_dict, nbatch=N_sample)
             if combined_restr.is_active():
                 combined_restraints_arg = combined_restr
 

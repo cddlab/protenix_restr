@@ -76,6 +76,8 @@ class CombinedRestraints:
         # CG state (set in minimize)
         self.nbatch: int = 0
         self.natoms: int = 0
+        # GPU optimizer (set in setup_site when gpu=True)
+        self.torch_impl = None
 
     # ------------------------------------------------------------------
     # Configuration
@@ -88,11 +90,14 @@ class CombinedRestraints:
         self.max_iter = int(config.get("max_iter", 100))
         self.start_sigma = float(config.get("start_sigma", 1.0))
 
+        self.gpu = config.get("gpu", False)
+
         conformer_cfg = config.get("conformer_restraints_config", {})
         self.conformer_config = conformer_cfg
         self.bond_config = conformer_cfg.get("bond", {})
         self.angle_config = conformer_cfg.get("angle", {})
         self.chiral_config = conformer_cfg.get("chiral", {})
+        self.vdw_config = conformer_cfg.get("vdw", {})
 
         distance_cfg = config.get("distance_restraints_config", [])
         for entry in distance_cfg:
@@ -273,11 +278,16 @@ class CombinedRestraints:
     # Setup (called before diffusion sampling)
     # ------------------------------------------------------------------
 
-    def setup_site(self, feats: dict) -> None:
+    def setup_site(self, feats: dict, nbatch: int = 1) -> None:
         """Resolve site indices and build active_sites list.
 
         Must be called after set_feats() (for distance restraints) and
         after ref_conformer_restraint is in feats (for conformer restraints).
+
+        Args:
+            feats: input_feature_dict from the model.
+            nbatch: number of diffusion samples (N_sample). Required for GPU mode
+                    to pre-build the batch-replicated index tensors in RestrTorchImpl.
         """
         self.reset_indices()
 
@@ -339,8 +349,98 @@ class CombinedRestraints:
             f"chirals={len(self.chiral_data)}, distances={len(self.distance_data)}"
         )
 
+        if self.gpu:
+            self._setup_gpu(feats, nbatch, feat_restr, device)
+
     def is_active(self) -> bool:
         return len(self.active_sites) > 0
+
+    # ------------------------------------------------------------------
+    # GPU setup and minimization
+    # ------------------------------------------------------------------
+
+    def _setup_gpu(self, feats: dict, nbatch: int, feat_restr, device) -> None:
+        """Initialize RestrTorchImpl and VdW for GPU-based minimization.
+
+        Args:
+            feats: input_feature_dict (must contain "ref_element").
+            nbatch: number of diffusion samples.
+            feat_restr: numpy array of conformer_restraint site ids per atom (global).
+            device: torch device of the feature tensors.
+        """
+        from .torch_restr_impl import RestrTorchImpl
+
+        n_active = len(self.active_sites)
+        self.torch_impl = RestrTorchImpl(
+            self.bond_data,
+            self.angle_data,
+            self.chiral_data,
+            self.distance_data,
+            nbatch,
+            n_active,
+            device,
+        )
+
+        # Identify ligand atoms: those with conformer restraints set (feat_restr != 0)
+        # These are local indices within active_sites.
+        global_to_local = {g: l for l, g in enumerate(self.active_sites)}
+        if feat_restr is not None:
+            ligand_atoms_local = [
+                global_to_local[g]
+                for g in self.active_sites
+                if g < len(feat_restr) and int(feat_restr[g]) != 0
+            ]
+        else:
+            ligand_atoms_local = []
+
+        # Slice ref_element to active_sites only; take batch index 0 (same topology)
+        active_sites_tensor = torch.tensor(self.active_sites, dtype=torch.long)
+        ref_element = feats.get("ref_element")
+        if ref_element is not None:
+            # ref_element shape: [..., N_atom, 128] — strip leading batch dims
+            elem_flat = ref_element.reshape(-1, ref_element.shape[-1])  # (N_atom, 128)
+            elems_active = elem_flat[active_sites_tensor].to(device)    # (N_active, 128)
+        else:
+            elems_active = torch.zeros(n_active, 128, device=device)
+
+        self.torch_impl.setup_vdw(
+            nbatch=nbatch,
+            natoms=n_active,
+            ligand_atoms=ligand_atoms_local,
+            elems=elems_active,
+            config=self.vdw_config,
+        )
+
+    def minimize_gpu(self, batch_crds_in: torch.Tensor, istep: int) -> None:
+        """Run GPU-based CG minimization on active atoms.
+
+        Uses torchmin.minimize() with the RestrTorchImpl energy/gradient function.
+        All computation stays on GPU — no CPU transfers per diffusion step.
+
+        Args:
+            batch_crds_in: shape (N_batch, N_atom, 3), modified in-place.
+            istep: diffusion step index (for logging).
+        """
+        import torchmin
+        from .torch_restr_impl import MyScalarFunc
+
+        crds = batch_crds_in[:, self.active_sites, :]  # (N_batch, N_active, 3)
+
+        if self.torch_impl.use_vdw:
+            self.torch_impl.update_vdw_idx(crds)
+
+        func = MyScalarFunc(self.torch_impl, x_shape=crds.shape)
+        opt = torchmin.minimize(
+            func,
+            crds,
+            method=self.method,
+            options={"max_iter": self.max_iter, "gtol": 1e-3},
+        )
+
+        if self.verbose:
+            print(f"[Restraints GPU] step {istep}: success={opt.success}, msg={opt.message}")
+
+        batch_crds_in[:, self.active_sites, :] = opt.x
 
     # ------------------------------------------------------------------
     # Minimization
@@ -359,6 +459,10 @@ class CombinedRestraints:
         if not self.is_active():
             return
         if sigma_t > self.start_sigma:
+            return
+
+        if self.gpu:
+            self.minimize_gpu(batch_crds_in, istep)
             return
 
         device = batch_crds_in.device

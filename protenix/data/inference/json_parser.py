@@ -610,15 +610,18 @@ def build_ligand(entity_info: dict) -> dict:
                             noH_name_to_idx[atom.GetProp("name").strip()] = i
                         except KeyError:
                             pass
-                    # Reorder mol_noH to match atom_array.atom_name order
-                    aa_names = list(atom_array.atom_name)
+                    # Reorder mol_noH to match atom_array.atom_name order.
+                    # Biotite atom names may have trailing spaces; strip both sides.
+                    aa_names = [name.strip() for name in atom_array.atom_name]
                     new_order = [noH_name_to_idx[n] for n in aa_names if n in noH_name_to_idx]
                     if len(new_order) == mol_noH.GetNumAtoms():
                         atom_info["mol_noH"] = Chem.RenumberAtoms(mol_noH, new_order)
                     else:
+                        missing = [n for n in aa_names if n not in noH_name_to_idx]
                         logger.warning(
                             f"CCD {ccd_code[0]}: atom count mismatch between rdkit mol "
                             f"({mol_noH.GetNumAtoms()}) and atom_array ({len(aa_names)}). "
+                            f"Missing atom names in rdkit mol: {missing}. "
                             "Skipping mol_noH for conformer restraints."
                         )
             except Exception as e:

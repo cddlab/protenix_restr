@@ -350,7 +350,7 @@ class CombinedRestraints:
         )
 
         if self.gpu:
-            self._setup_gpu(feats, nbatch, feat_restr, device)
+            self._setup_gpu(feats, nbatch, feat_restr)
 
     def is_active(self) -> bool:
         return len(self.active_sites) > 0
@@ -359,16 +359,20 @@ class CombinedRestraints:
     # GPU setup and minimization
     # ------------------------------------------------------------------
 
-    def _setup_gpu(self, feats: dict, nbatch: int, feat_restr, device) -> None:
+    def _setup_gpu(self, feats: dict, nbatch: int, feat_restr) -> None:
         """Initialize RestrTorchImpl and VdW for GPU-based minimization.
 
         Args:
             feats: input_feature_dict (must contain "ref_element").
             nbatch: number of diffusion samples.
             feat_restr: numpy array of conformer_restraint site ids per atom (global).
-            device: torch device of the feature tensors.
         """
         from .torch_restr_impl import RestrTorchImpl
+
+        # Infer device from any tensor in feats
+        device = next(
+            (v.device for v in feats.values() if isinstance(v, torch.Tensor)), torch.device("cpu")
+        )
 
         n_active = len(self.active_sites)
         self.torch_impl = RestrTorchImpl(

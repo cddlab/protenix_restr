@@ -552,6 +552,15 @@ class Protenix(nn.Module):
         else:
             cache["pair_z"] = None
             cache["p_lm/c_l"] = [None, None]
+        # Set up restraint-guided inference if configured
+        combined_restraints_arg = None
+        if "ref_conformer_restraint" in input_feature_dict:
+            from protenix.model.restraints.combined_restraints import CombinedRestraints
+            combined_restr = CombinedRestraints.get_instance()
+            combined_restr.setup_site(input_feature_dict)
+            if combined_restr.is_active():
+                combined_restraints_arg = combined_restr
+
         pred_dict["coordinate"] = self.sample_diffusion(
             denoise_net=self.diffusion_module,
             input_feature_dict=input_feature_dict,
@@ -565,6 +574,7 @@ class Protenix(nn.Module):
             noise_schedule=noise_schedule,
             inplace_safe=inplace_safe,
             enable_efficient_fusion=self.enable_efficient_fusion,
+            combined_restraints=combined_restraints_arg,
         )
 
         step_diffusion = time.time()

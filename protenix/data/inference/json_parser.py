@@ -444,6 +444,8 @@ def rdkit_mol_to_atom_info(mol: Chem.Mol) -> dict[str, Any]:
 
     # Atom_array without hydrogens
     atom_info["atom_array"] = rdkit_mol_to_atom_array(mol, removeHs=True)
+    # H-removed mol for conformer restraints (atom order matches atom_array)
+    atom_info["mol_noH"] = Chem.RemoveHs(mol)
     return atom_info
 
 

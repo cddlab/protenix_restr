@@ -351,4 +351,96 @@ class SampleDictToFeatures:
         feature_dict["frame_atom_index"] = torch.Tensor(
             token_array_with_frame.get_annotation("frame_atom_index")
         ).long()
+
+        # Restraint-guided inference setup (optional)
+        restraints_config = self.input_dict.get("restraints_config")
+        if restraints_config is not None:
+            feature_dict = self._setup_restraints(
+                feature_dict, atom_array, restraints_config
+            )
+
         return feature_dict, atom_array, token_array
+
+    def _setup_restraints(
+        self,
+        feature_dict: dict,
+        atom_array: AtomArray,
+        restraints_config: dict,
+    ) -> dict:
+        """Set up CombinedRestraints and add ref_conformer_restraint to feature_dict.
+
+        Called when the input JSON contains a top-level "restraints_config" field.
+        """
+        from rdkit import Chem
+        from protenix.model.restraints.combined_restraints import CombinedRestraints
+
+        # Reset singleton for a fresh start (important for sequential inference runs)
+        CombinedRestraints._instance = None
+        combined_restr = CombinedRestraints.get_instance()
+        combined_restr.set_config(restraints_config)
+
+        N_atom = len(atom_array)
+
+        # Register conformer restraints for each ligand entity with conformer_restraints: true
+        for idx, type2entity_dict in enumerate(self.input_dict["sequences"]):
+            for entity_type, entity in type2entity_dict.items():
+                if entity_type not in ("ligand",):
+                    continue
+                if not entity.get("conformer_restraints", False):
+                    continue
+                mol_noH = entity.get("mol_noH")
+                if mol_noH is None:
+                    logger.warning(
+                        f"Entity {idx+1} has conformer_restraints=true but no mol_noH."
+                        " Skipping conformer restraints."
+                    )
+                    continue
+                conf = mol_noH.GetConformer()
+                entity_id = str(idx + 1)
+
+                for copy_id in range(1, entity["count"] + 1):
+                    mask = (
+                        (atom_array.label_entity_id == entity_id)
+                        & (atom_array.copy_id == copy_id)
+                    )
+                    global_indices = np.where(mask)[0]
+                    if len(global_indices) == 0:
+                        logger.warning(
+                            f"No atoms found for entity {entity_id} copy {copy_id}"
+                        )
+                        continue
+
+                    # Bond restraints
+                    for bond in mol_noH.GetBonds():
+                        ai = bond.GetBeginAtomIdx()
+                        aj = bond.GetEndAtomIdx()
+                        if ai < len(global_indices) and aj < len(global_indices):
+                            combined_restr.make_bond(ai, aj, conf, global_indices)
+
+                    # Chiral restraints
+                    for iatm in range(mol_noH.GetNumAtoms()):
+                        atom = mol_noH.GetAtomWithIdx(iatm)
+                        if (
+                            atom.GetChiralTag()
+                            != Chem.ChiralType.CHI_UNSPECIFIED
+                            and iatm < len(global_indices)
+                        ):
+                            combined_restr.make_chiral(iatm, mol_noH, conf, global_indices)
+
+                    # Angle restraints
+                    combined_restr.make_angle_restraints(mol_noH, conf, global_indices)
+
+                    logger.info(
+                        f"Conformer restraints registered for entity {entity_id} copy {copy_id}"
+                        f" ({len(global_indices)} atoms)"
+                    )
+
+        # Build ref_conformer_restraint tensor: shape (N_atom,)
+        feature_dict["ref_conformer_restraint"] = (
+            combined_restr.build_conformer_restraint_tensor(N_atom)
+        )
+
+        # Resolve distance restraint atom selections
+        combined_restr.set_feats(feature_dict, atom_array)
+
+        return feature_dict

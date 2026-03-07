@@ -592,6 +592,37 @@ def build_ligand(entity_info: dict) -> dict:
             res_ids += [res_id] * len(ccd_atom_array)
         atom_info["atom_array"] = atom_array
         atom_info["atom_array"].res_id[:] = res_ids
+
+        # For single CCD code, build mol_noH for conformer restraints.
+        # The atom order in mol_noH must match atom_array.atom_name order,
+        # since _setup_restraints() maps mol_noH atom index i -> global_indices[i].
+        # pdbeccdutils and biotite may parse CCD atoms in different orders,
+        # so we bridge by atom_name using RenumberAtoms().
+        if len(ccd_code) == 1:
+            try:
+                rdkit_mol = ccd.get_component_rdkit_mol(ccd_code[0])
+                if rdkit_mol is not None:
+                    mol_noH = AllChem.RemoveHs(rdkit_mol, sanitize=False)
+                    # Build atom_name → index map for mol_noH
+                    noH_name_to_idx = {}
+                    for i, atom in enumerate(mol_noH.GetAtoms()):
+                        try:
+                            noH_name_to_idx[atom.GetProp("name").strip()] = i
+                        except KeyError:
+                            pass
+                    # Reorder mol_noH to match atom_array.atom_name order
+                    aa_names = list(atom_array.atom_name)
+                    new_order = [noH_name_to_idx[n] for n in aa_names if n in noH_name_to_idx]
+                    if len(new_order) == mol_noH.GetNumAtoms():
+                        atom_info["mol_noH"] = Chem.RenumberAtoms(mol_noH, new_order)
+                    else:
+                        logger.warning(
+                            f"CCD {ccd_code[0]}: atom count mismatch between rdkit mol "
+                            f"({mol_noH.GetNumAtoms()}) and atom_array ({len(aa_names)}). "
+                            "Skipping mol_noH for conformer restraints."
+                        )
+            except Exception as e:
+                logger.warning(f"Failed to build mol_noH for CCD {ccd_code[0]}: {e}")
     else:
         if info["ligand"].startswith("FILE_"):
             lig_file_path = ligand_str[5:]

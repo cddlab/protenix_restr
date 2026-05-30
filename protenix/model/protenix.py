@@ -552,6 +552,20 @@ class Protenix(nn.Module):
         else:
             cache["pair_z"] = None
             cache["p_lm/c_l"] = [None, None]
+        # restraint-guided inference (rgi_utils): build the shared CombinedRestraints
+        # from the stashed atom_array + restraints_config and inject it into the
+        # diffusion sampler (no-op when no restraints_config is present).
+        combined_restraints = None
+        _rc = input_feature_dict.get("restraints_config")
+        if _rc:
+            from rgi_utils.combined import CombinedRestraints
+            from rgi_utils.protenix.adapter import ProtenixAdapter
+
+            CombinedRestraints.reset()
+            combined_restraints = CombinedRestraints.get_instance()
+            combined_restraints.set_config(_rc)
+            combined_restraints.setup(ProtenixAdapter(input_feature_dict), nbatch=N_sample)
+
         pred_dict["coordinate"] = self.sample_diffusion(
             denoise_net=self.diffusion_module,
             input_feature_dict=input_feature_dict,
@@ -565,7 +579,11 @@ class Protenix(nn.Module):
             noise_schedule=noise_schedule,
             inplace_safe=inplace_safe,
             enable_efficient_fusion=self.enable_efficient_fusion,
+            combined_restraints=combined_restraints,
         )
+        if combined_restraints is not None:
+            c = pred_dict["coordinate"]
+            combined_restraints.finalize(c.reshape(-1, c.shape[-2], c.shape[-1]), N_step)
 
         step_diffusion = time.time()
         time_tracker.update({"diffusion": step_diffusion - step_trunk})

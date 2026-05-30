@@ -351,4 +351,12 @@ class SampleDictToFeatures:
         feature_dict["frame_atom_index"] = torch.Tensor(
             token_array_with_frame.get_annotation("frame_atom_index")
         ).long()
+
+        # restraint-guided inference (rgi_utils): stash the atom_array and the
+        # restraints_config so the model can build CombinedRestraints later.
+        # Non-tensor values are skipped by to_device and survive to the model.
+        feature_dict["atom_array"] = atom_array
+        _rc = self.input_dict.get("restraints_config")
+        if _rc is not None:
+            feature_dict["restraints_config"] = _rc
         return feature_dict, atom_array, token_array

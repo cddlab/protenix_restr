@@ -135,6 +135,7 @@ def sample_diffusion(
     inplace_safe: bool = False,
     attn_chunk_size: Optional[int] = None,
     enable_efficient_fusion: bool = False,
+    combined_restraints: Optional[Any] = None,
 ) -> torch.Tensor:
     """Implements Algorithm 18 in AF3.
     It performances denoising steps from time 0 to time T.
@@ -183,7 +184,7 @@ def sample_diffusion(
             size=(*batch_shape, chunk_n_sample, N_atom, 3), device=device, dtype=dtype
         )  # NOTE: set seed in distributed training
 
-        for _, (c_tau_last, c_tau) in enumerate(
+        for step_i, (c_tau_last, c_tau) in enumerate(
             zip(noise_schedule[:-1], noise_schedule[1:])
         ):
             # [..., N_sample, N_atom, 3]
@@ -225,6 +226,16 @@ def sample_diffusion(
                 inplace_safe=inplace_safe,
                 enable_efficient_fusion=enable_efficient_fusion,
             )
+
+            # restraint-guided inference (rgi_utils): nudge the denoised coords
+            # towards the restraints before the Euler step. Reshape
+            # (*batch, N_sample, N_atom, 3) -> (-1, N_atom, 3) for minimize.
+            if combined_restraints is not None:
+                sigma_t = float(c_tau_last)
+                _shape = x_denoised.shape
+                _flat = x_denoised.reshape(-1, _shape[-2], _shape[-1])
+                combined_restraints.minimize(_flat, step_i, sigma_t)
+                x_denoised = _flat.reshape(_shape)
 
             delta = (x_noisy - x_denoised) / t_hat[
                 ..., None, None

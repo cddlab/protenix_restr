@@ -107,6 +107,23 @@ class DataDumper:
         )
         return dump_dir
 
+    def is_complete(
+        self, dataset_name: str, sample_name: str, seed: int, n_sample: int
+    ) -> bool:
+        """True if all ``n_sample`` prediction CIFs for this (sample, seed) already
+        exist. Used by inference to skip already-finished work on a retry."""
+        pred_dir = os.path.join(
+            self._get_dump_dir(dataset_name, sample_name, seed), "predictions"
+        )
+        if not os.path.isdir(pred_dir):
+            return False
+        cifs = [
+            f
+            for f in os.listdir(pred_dir)
+            if f.startswith(f"{sample_name}_sample_") and f.endswith(".cif")
+        ]
+        return len(cifs) >= n_sample
+
     def dump_predictions(
         self,
         pred_dict: dict,

@@ -473,6 +473,15 @@ def infer_predict(runner: InferenceRunner, configs: Any) -> None:
                     f"N_asym {data['N_asym'].item()}, N_token {data['N_token'].item()}, "
                     f"N_atom {data['N_atom'].item()}, N_msa {data['N_msa'].item()}"
                 )
+                # Retry: skip a (sample, seed) whose outputs already exist, so a
+                # failed batch reruns only the missing structures.
+                if runner.dumper.is_complete(
+                    "", sample_name, seed, configs.sample_diffusion.N_sample
+                ):
+                    logger.info(
+                        f"{sample_name} [seed:{seed}] already complete, skipping"
+                    )
+                    continue
                 new_configs = update_inference_configs(configs, data["N_token"].item())
                 runner.update_model_configs(new_configs)
                 prediction = runner.predict(data)

@@ -561,10 +561,12 @@ class Protenix(nn.Module):
             from rgi_utils.combined import CombinedRestraints
             from rgi_utils.protenix.adapter import ProtenixAdapter
 
-            CombinedRestraints.reset()
-            combined_restraints = CombinedRestraints.get_instance()
-            combined_restraints.set_config(_rc)
-            combined_restraints.setup(ProtenixAdapter(input_feature_dict), nbatch=N_sample)
+            # Fresh per-call instance + this structure's own config — sample/seed
+            # loops never share state, and an exception cannot poison the next call.
+            combined_restraints = CombinedRestraints()
+            combined_restraints.setup(
+                ProtenixAdapter(input_feature_dict), nbatch=N_sample, config=_rc
+            )
 
         pred_dict["coordinate"] = self.sample_diffusion(
             denoise_net=self.diffusion_module,

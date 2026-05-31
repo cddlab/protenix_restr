@@ -475,9 +475,13 @@ def infer_predict(runner: InferenceRunner, configs: Any) -> None:
                 )
                 # Retry: skip a (sample, seed) whose outputs already exist, so a
                 # failed batch reruns only the missing structures.
-                if runner.dumper.is_complete(
-                    "", sample_name, seed, configs.sample_diffusion.N_sample
-                ):
+                # protenix dumps N_model_seed * N_sample CIFs per (sample, seed)
+                # when N_model_seed > 1, so the completeness threshold must use the
+                # product (default N_model_seed=1 leaves the common path unchanged).
+                expected_cifs = (
+                    configs.sample_diffusion.N_sample * configs.model.N_model_seed
+                )
+                if runner.dumper.is_complete("", sample_name, seed, expected_cifs):
                     logger.info(
                         f"{sample_name} [seed:{seed}] already complete, skipping"
                     )

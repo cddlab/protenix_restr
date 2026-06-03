@@ -1,0 +1,34 @@
+[
+  {
+    "name": "qbp_rgi_example",
+    "sequences": [
+      { "proteinChain": { "sequence": "ADKKLVVATDTAFVPFEFKQGDKYVGFDVDLWAAIAKELKLDYELKPMDFSGIIPALQTKNVDLALAGITITDERKKAIDFSDGYYKSGLLVMVKANNNDVKSVKDLDGKVVAVKSGTGSVDYAKANIKTKDLRQFPNIDNAYMELGTNRADAVLHDTPNILYFIKTAGNGQFKAVGDSLEAQQYGIAFPKGSDELRDKVNGALKTLRENGTYNEIYKKWFGTEPK", "count": 1 } },
+      { "ligand": { "ligand": "CCD_ATP", "count": 1 } }
+    ],
+    "restraints_config": {
+      "_comment": "rgi_utils restraint-guided inference (distance + ligand conformer). RUN: protenix pred -i restr_example.json -o out --use_default_params true --use_msa false --seeds 0 --step 200 --sample 1 --cycle 4 . Keys: gpu->torch (or backend:jax/numpy); method=CG; max_iter per step. start_sigma: a restraint is ACTIVE only when sigma<=start_sigma; settable globally (here), per distance entry, and once for all conformer terms (3 levels; per-entry overrides global). ('_comment' keys are ignored by the parser.)",
+      "verbose": true,
+      "gpu": true,
+      "max_iter": 1000,
+      "method": "CG",
+      "start_sigma": 99999999,
+      "distance_restraints_config": [
+        {
+          "_comment": "COM distance between two atom groups, pulled to target_distance. type options: harmonic{target_distance} | flat-bottomed{target_distance1,target_distance2} | flat-bottomed1{target_distance1} | flat-bottomed2{target_distance2}. Selection DSL: chain/resid N/resid A to B/index/and/or/not/(). resid = per-chain 1-based ordinal; QUALIFY protein groups with 'chain A and (...)' so a bare resid range does not also match the ligand (chain B) atoms.",
+          "atom_selection1": "chain A and ((resid 5 to 84) or (resid 186 to 224))",
+          "atom_selection2": "chain A and (resid 90 to 180)",
+          "start_sigma": 99999999,
+          "harmonic": { "target_distance": 25.0 }
+        }
+      ],
+      "conformer_restraints_config": {
+        "_comment": "Hold the ligand at its ideal RDKit geometry (bond/angle/chiral + intramolecular VdW). start_sigma here applies to ALL conformer terms (one value, all ligands); lower it (e.g. 1.0) to enforce ligand geometry only late in denoising.",
+        "start_sigma": 99999999,
+        "bond": { "weight": 1.0 },
+        "angle": { "weight": 1.0 },
+        "chiral": { "weight": 1.0 },
+        "vdw": { "weight": 1.0, "mode": "intramolecular" }
+      }
+    }
+  }
+]

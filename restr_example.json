@@ -6,12 +6,11 @@
       { "ligand": { "ligand": "CCD_ATP", "count": 1 } }
     ],
     "restraints_config": {
-      "_comment": "rgi_utils restraint-guided inference (distance + ligand conformer). RUN: protenix pred -i restr_example.json -o out --use_default_params true --use_msa false --seeds 0 --step 200 --sample 1 --cycle 4 . Keys: gpu->torch (or backend:jax/numpy); method=CG; max_iter per step. start_sigma: a restraint is ACTIVE only when sigma<=start_sigma; settable globally (here), per distance entry, and once for all conformer terms (3 levels; per-entry overrides global). ('_comment' keys are ignored by the parser.)",
+      "_comment": "rgi_utils restraint-guided inference (distance + ligand conformer). RUN: protenix pred -i restr_example.json -o out --use_default_params true --use_msa false --seeds 0 --step 200 --sample 1 --cycle 4 . Keys: gpu->torch (or backend:jax/numpy); method=CG; max_iter per step. start_sigma: a restraint is ACTIVE only when sigma<=start_sigma; OPTIONAL per distance entry and once in conformer_restraints_config (omit -> active every step; set e.g. 1.0 for late-only); no top-level/global start_sigma. ('_comment' keys are ignored by the parser.)",
       "verbose": true,
       "gpu": true,
       "max_iter": 1000,
       "method": "CG",
-      "start_sigma": 99999999,
       "distance_restraints_config": [
         {
           "_comment": "COM distance between two atom groups, pulled to target_distance. type options: harmonic{target_distance} | flat-bottomed{target_distance1,target_distance2} | flat-bottomed1{target_distance1} | flat-bottomed2{target_distance2}. Selection DSL: chain/resid N/resid A to B/index/and/or/not/(). resid = per-chain 1-based ordinal; QUALIFY protein groups with 'chain A and (...)' so a bare resid range does not also match the ligand (chain B) atoms.",

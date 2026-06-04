@@ -13,9 +13,14 @@ source .venv/bin/activate
 rm -rf out_restr_example
 # restr_example.json nests `restraints_config` and runs single-sequence (--use_msa false).
 # RGI: rgi_utils minimizes distance + conformer restraints on the x0 prediction each step.
-protenix pred -i restr_example.json -o out_restr_example \
+# Run to a log so the inference exit status is checked: a `| grep ... || true` pipe
+# (no pipefail) would otherwise swallow a crash and still report success.
+if ! protenix pred -i restr_example.json -o out_restr_example \
     --use_default_params true --use_msa false --seeds 0 --step 200 --sample 1 --cycle 4 \
-    2>&1 | grep -iE "rgi_utils|built spec|setup:|finalize|Error|Traceback" || true
+    > run_restr_example.log 2>&1; then
+    echo "protenix inference FAILED:"; tail -n 40 run_restr_example.log; exit 1
+fi
+grep -iE "rgi_utils|built spec|setup:|finalize" run_restr_example.log || true
 
 CIF=$(find out_restr_example -name '*.cif' | head -1)
 echo "prediction: $CIF"

@@ -126,10 +126,10 @@ class SampleDictToFeatures:
                 else:
                     entity_atom_array.hetero[:] = True
 
-                # per-ligand conformer_restraints flag (default on; opt out with
-                # conformer_restraints:false). The rgi protenix adapter reads this
-                # annotation; polymers carry True but never become ligand confs.
-                conf_rest = bool(entity.get("conformer_restraints", True))
+                # per-ligand conformer_restraints flag (opt-in: default off; set
+                # conformer_restraints:true to enable). The rgi protenix adapter reads
+                # this annotation; polymers carry it but never become ligand confs.
+                conf_rest = bool(entity.get("conformer_restraints", False))
                 entity_atom_array.set_annotation(
                     "conformer_restraints",
                     np.full(len(entity_atom_array), conf_rest, dtype=bool),

@@ -3,7 +3,7 @@
     "name": "qbp_rgi_example",
     "sequences": [
       { "proteinChain": { "sequence": "ADKKLVVATDTAFVPFEFKQGDKYVGFDVDLWAAIAKELKLDYELKPMDFSGIIPALQTKNVDLALAGITITDERKKAIDFSDGYYKSGLLVMVKANNNDVKSVKDLDGKVVAVKSGTGSVDYAKANIKTKDLRQFPNIDNAYMELGTNRADAVLHDTPNILYFIKTAGNGQFKAVGDSLEAQQYGIAFPKGSDELRDKVNGALKTLRENGTYNEIYKKWFGTEPK", "count": 1 } },
-      { "ligand": { "ligand": "CCD_ATP", "count": 1 } }
+      { "ligand": { "ligand": "CCD_ATP", "count": 1, "conformer_restraints": true } }
     ],
     "restraints_config": {
       "_comment": "rgi_utils restraint-guided inference (distance + ligand conformer). RUN: protenix pred -i restr_example.json -o out --use_default_params true --use_msa false --seeds 0 --step 200 --sample 1 --cycle 4 . Keys: gpu->torch (or backend:jax/numpy); method=CG; max_iter per step. start_sigma: a restraint is ACTIVE only when sigma<=start_sigma; OPTIONAL per distance entry and once in conformer_restraints_config (omit -> active every step; set e.g. 1.0 for late-only); no top-level/global start_sigma. ('_comment' keys are ignored by the parser.)",

@@ -398,10 +398,28 @@ def rdkit_mol_to_atom_array(mol: Chem.Mol, removeHs: bool = True) -> AtomArray:
         atom_array.charge[i] = atom.GetFormalCharge()
         atom_array.coord[i, :] = coord[i, :]
 
+    # Preserve RDKit bond order as the 3rd column (1=SINGLE, 2=DOUBLE, ...): a 2-col
+    # BondList defaults every order to 0 (BondType.ANY), which the rgi_utils dihedral
+    # featurizer reads as non-DOUBLE so cis/trans restraints silently vanish for a
+    # SMILES ligand. Kekulize first so aromatic ring bonds become explicit single/
+    # double (1/2) rather than GetBondTypeAsDouble()==1.5 -> int 1: the conformer
+    # restraint rebuilds this mol and UFF-relaxes it for its bond/angle targets, and a
+    # flat all-single "aromatic" ring puckers to sp3 under UFF. The Kekule pattern lets
+    # the rebuild's SanitizeMol re-perceive aromaticity. This touches only the order
+    # column; token_bonds (the sole model feature off these bonds) uses connectivity
+    # (cols 0,1) only, so predictions are unchanged.
+    kmol = Chem.Mol(mol)
+    try:
+        Chem.Kekulize(kmol, clearAromaticFlags=True)
+    except Exception:
+        kmol = mol  # non-kekulizable (exotic valence): fall back to as-is orders
     bonds = []
-    for bond in mol.GetBonds():
-        bonds.append([bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()])
-    atom_array.bonds = struc.BondList(atom_count, np.array(bonds))
+    for bond in kmol.GetBonds():
+        bonds.append(
+            [bond.GetBeginAtomIdx(), bond.GetEndAtomIdx(), int(bond.GetBondTypeAsDouble())]
+        )
+    bond_arr = np.array(bonds, dtype=int) if bonds else np.empty((0, 3), dtype=int)
+    atom_array.bonds = struc.BondList(atom_count, bond_arr)
     if removeHs:
         atom_array = atom_array[atom_array.element != "H"]
     return atom_array

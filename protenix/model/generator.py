@@ -236,6 +236,20 @@ def sample_diffusion(
                 _flat = x_denoised.reshape(-1, _shape[-2], _shape[-1])
                 combined_restraints.minimize(_flat, step_i, sigma_t)
                 x_denoised = _flat.reshape(_shape)
+                # Align x_noisy to the nudged x_denoised BEFORE the Euler step, so the
+                # rigid drift between them doesn't warp the restraint. The step is
+                # x_l = x_noisy + step_scale*(c_tau - t_hat)*(x_noisy - x_denoised)/t_hat,
+                # i.e. roughly -0.5*x_noisy + 1.5*x_denoised on the last step; without the
+                # align a dihedral (cis/trans) nudge gets extrapolated back toward x_noisy.
+                # boltz does the same via alignment_reverse_diff. Restraint-only path.
+                from protenix.metrics.rmsd import weighted_rigid_align
+
+                _w = torch.ones(
+                    x_noisy.shape[-2], device=x_noisy.device, dtype=torch.float32
+                )
+                x_noisy = weighted_rigid_align(
+                    x_noisy.float(), x_denoised.float(), _w
+                ).to(x_noisy.dtype)
 
             delta = (x_noisy - x_denoised) / t_hat[
                 ..., None, None

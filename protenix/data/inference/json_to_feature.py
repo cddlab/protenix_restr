@@ -96,13 +96,26 @@ class SampleDictToFeatures:
         """
         atom_array = None
         asym_chain_idx = 0
+        # asym_id_str -> SMILES for SMILES ligands only (CCD/FILE excluded). The RGI
+        # adapter uses it to build a stereo-correct ETKDG ideal conformer as the restraint
+        # target, instead of the model's predicted coords (which may be the wrong isomer,
+        # e.g. a maleate predicted trans).
+        self.smiles_by_chain: dict[str, str] = {}
         for idx, type2entity_dict in enumerate(self.input_dict["sequences"]):
             for entity_type, entity in type2entity_dict.items():
                 entity_id = str(idx + 1)
+                _lig = entity.get("ligand")
+                _is_smiles_lig = (
+                    entity_type == "ligand"
+                    and isinstance(_lig, str)
+                    and not _lig.startswith(("CCD_", "FILE_"))
+                )
 
                 entity_atom_array = None
                 for asym_chain_count in range(1, entity["count"] + 1):
                     asym_id_str = int_to_letters(asym_chain_idx + 1)
+                    if _is_smiles_lig:
+                        self.smiles_by_chain[asym_id_str] = _lig
                     asym_chain = copy.deepcopy(entity["atom_array"])
                     chain_id = [asym_id_str] * len(asym_chain)
                     copy_id = [asym_chain_count] * len(asym_chain)
@@ -365,6 +378,8 @@ class SampleDictToFeatures:
         # restraints_config so the model can build CombinedRestraints later.
         # Non-tensor values are skipped by to_device and survive to the model.
         feature_dict["atom_array"] = atom_array
+        # carry SMILES-per-chain so the RGI adapter can build ideal conformer targets
+        feature_dict["smiles_by_chain"] = getattr(self, "smiles_by_chain", {})
         _rc = self.input_dict.get("restraints_config")
         if _rc is not None:
             feature_dict["restraints_config"] = _rc

@@ -585,14 +585,10 @@ class Protenix(nn.Module):
         )
         if combined_restraints is not None:
             c = pred_dict["coordinate"]
-            # Per-step minimize tightens the denoised x0, but the integrator's step_scale
-            # extrapolation leaves the FINAL coords off the conformer target. Polish the
-            # output once at sigma=0 so the restraint is realised on the returned coords
-            # (conformer terms adjust only internal geometry + VdW, so the pose is kept).
-            _cf = c.reshape(-1, c.shape[-2], c.shape[-1])
-            combined_restraints.minimize(_cf, N_step, 0.0)
-            c = _cf.reshape(c.shape)
-            pred_dict["coordinate"] = c
+            # No polish: the per-step minimize on the denoised x0 realises the restraint over
+            # the trajectory (the converged late-step coords make the integrator's step_scale
+            # extrapolation collapse to ~denoised, leaving the output on target). finalize
+            # logs the residual only.
             combined_restraints.finalize(c.reshape(-1, c.shape[-2], c.shape[-1]), N_step)
 
         step_diffusion = time.time()

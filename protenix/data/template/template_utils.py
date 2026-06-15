@@ -20,7 +20,7 @@ import pickle
 import random
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, Mapping, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, Mapping, Optional, Sequence, Tuple, Union, List
 
 import requests
 
@@ -225,27 +225,32 @@ class TemplateFeatures:
 
         return pseudo_beta, pseudo_beta_mask
 
+    # Pre-computed bin edges (class-level cache to avoid recomputation)
+    _dgram_cache: dict = {}
+
     @staticmethod
     def dgram_from_positions(
         positions: np.ndarray, config: DistogramFeaturesConfig
     ) -> np.ndarray:
         """Compute distogram from amino acid positions."""
-        lower_breaks = np.linspace(config.min_bin, config.max_bin, config.num_bins)
-        lower_breaks = np.square(lower_breaks)
-        upper_breaks = np.concatenate(
-            [lower_breaks[1:], np.array([1e8], dtype=np.float32)], axis=-1
-        )
-        dist2 = np.sum(
-            np.square(
-                np.expand_dims(positions, axis=-2) - np.expand_dims(positions, axis=-3)
-            ),
-            axis=-1,
-            keepdims=True,
-        )
+        cache_key = (config.min_bin, config.max_bin, config.num_bins)
+        if cache_key not in TemplateFeatures._dgram_cache:
+            lower = np.linspace(
+                config.min_bin, config.max_bin, config.num_bins, dtype=np.float32
+            )
+            lower = np.square(lower)
+            upper = np.empty_like(lower)
+            upper[:-1] = lower[1:]
+            upper[-1] = 1e8
+            TemplateFeatures._dgram_cache[cache_key] = (lower, upper)
+        lower_breaks, upper_breaks = TemplateFeatures._dgram_cache[cache_key]
 
-        dgram = (dist2 > lower_breaks).astype(np.float32) * (
-            dist2 < upper_breaks
-        ).astype(np.float32)
+        # Compute squared distances using einsum (avoids large intermediate)
+        pos = positions.astype(np.float32, copy=False)
+        diff = pos[:, np.newaxis, :] - pos[np.newaxis, :, :]
+        dist2 = np.einsum("ijk,ijk->ij", diff, diff)[..., np.newaxis]
+
+        dgram = ((dist2 > lower_breaks) & (dist2 < upper_breaks)).astype(np.float32)
         return dgram
 
     @staticmethod
@@ -256,11 +261,8 @@ class TemplateFeatures:
         epsilon: float = 1e-6,
     ) -> tuple[np.ndarray, np.ndarray]:
         """Simplified calculation of template unit vector."""
-        # Get backbone indices (C, CA, N) for each residue from protein_data_processing
-        # Group 0: [C, CA, N]
-        backbone_indices = RESTYPE_RIGIDGROUP_DENSE_ATOM_IDX[aatype, 0]  # [num_res, 3]
+        backbone_indices = RESTYPE_RIGIDGROUP_DENSE_ATOM_IDX[aatype, 0]
 
-        # Indices according to protein_data_processing.py: C is 0, CA is 1, N is 2
         c_idx = backbone_indices[:, 0]
         ca_idx = backbone_indices[:, 1]
         n_idx = backbone_indices[:, 2]
@@ -268,9 +270,9 @@ class TemplateFeatures:
         num_res = aatype.shape[0]
         res_indices = np.arange(num_res)
 
-        c_pos = atom_positions[res_indices, c_idx]
-        ca_pos = atom_positions[res_indices, ca_idx]
-        n_pos = atom_positions[res_indices, n_idx]
+        c_pos = atom_positions[res_indices, c_idx].astype(np.float32, copy=False)
+        ca_pos = atom_positions[res_indices, ca_idx].astype(np.float32, copy=False)
+        n_pos = atom_positions[res_indices, n_idx].astype(np.float32, copy=False)
 
         c_mask = atom_mask[res_indices, c_idx]
         ca_mask = atom_mask[res_indices, ca_idx]
@@ -278,37 +280,30 @@ class TemplateFeatures:
 
         mask = (c_mask * ca_mask * n_mask).astype(np.float32)
 
-        # Local frame: origin at CA
-        # x-axis along C-CA (following original code convention)
+        # Local frame: CA origin, C-CA is x-axis
+        # Uses einsum for inline norm computation instead of np.linalg.norm
         v1 = c_pos - ca_pos
         v2 = n_pos - ca_pos
 
-        e1 = v1 / (np.linalg.norm(v1, axis=-1, keepdims=True) + epsilon)
-        # Orthogonalize v2 against e1
-        e2 = v2 - np.sum(v2 * e1, axis=-1, keepdims=True) * e1
-        e2 = e2 / (np.linalg.norm(e2, axis=-1, keepdims=True) + epsilon)
-        # e3 = e1 x e2
+        v1_norm = np.sqrt(np.einsum("ij,ij->i", v1, v1))[:, np.newaxis] + epsilon
+        e1 = v1 / v1_norm
+        e2 = v2 - np.einsum("ij,ij->i", v2, e1)[:, np.newaxis] * e1
+        e2_norm = np.sqrt(np.einsum("ij,ij->i", e2, e2))[:, np.newaxis] + epsilon
+        e2 = e2 / e2_norm
         e3 = np.cross(e1, e2)
 
-        # Relative positions of all CA atoms to all local frames
-        # diff[i, j] = CA[j] - CA[i]
-        diff = ca_pos[None, :, :] - ca_pos[:, None, :]  # [num_res, num_res, 3]
+        # Build rotation matrix and transform via einsum
+        R = np.stack([e1, e2, e3], axis=-1)  # [num_res, 3, 3]
+        diff = ca_pos[np.newaxis, :, :] - ca_pos[:, np.newaxis, :]
+        unit_vector = np.einsum("ilk,ijl->ijk", R, diff)
 
-        # Transform to local frame: P' = R^T @ diff
-        # R = [e1 | e2 | e3] -> x' = e1 . diff, y' = e2 . diff, z' = e3 . diff
-        ux = np.sum(e1[:, None, :] * diff, axis=-1)
-        uy = np.sum(e2[:, None, :] * diff, axis=-1)
-        uz = np.sum(e3[:, None, :] * diff, axis=-1)
-
-        unit_vector = np.stack([ux, uy, uz], axis=-1)  # [num_res, num_res, 3]
-
-        # Normalize to unit vector
-        uv_norm = np.linalg.norm(unit_vector, axis=-1, keepdims=True)
-        unit_vector = unit_vector / (uv_norm + epsilon)
+        uv_norm = np.sqrt(
+            np.einsum("ijk,ijk->ij", unit_vector, unit_vector)
+        )[..., np.newaxis] + epsilon
+        unit_vector = unit_vector / uv_norm
 
         # 2D mask
         mask_2d = mask[:, None] * mask[None, :]
-
         return unit_vector, mask_2d
 
 
@@ -502,17 +497,18 @@ class TemplateHitProcessor:
     ):
         """Verifies that distance between consecutive CA atoms is within limits."""
         ca_idx = ATOM37_ORDER["CA"]
-        prev_pos = None
-        for i, (p, m) in enumerate(zip(pos, mask)):
-            if m[ca_idx]:
-                curr_pos = p[ca_idx]
-                if prev_pos is not None:
-                    dist = np.linalg.norm(curr_pos - prev_pos)
-                    if dist > max_dist:
-                        raise CaDistanceError(
-                            f"Distance between residues {i} and previous is {dist:.2f} > {max_dist}"
-                        )
-                prev_pos = curr_pos
+        ca_mask = mask[:, ca_idx].astype(bool)
+        if ca_mask.sum() < 2:
+            return
+        ca_pos = pos[ca_mask, ca_idx, :]
+        diffs = ca_pos[1:] - ca_pos[:-1]
+        dists = np.sqrt(np.einsum("ij,ij->i", diffs, diffs))
+        max_found = dists.max()
+        if max_found > max_dist:
+            bad_idx = int(np.argmax(dists))
+            raise CaDistanceError(
+                f"Distance between residues at index {bad_idx} is {max_found:.2f} > {max_dist}"
+            )
 
     def _get_atom_positions(
         self,
@@ -856,6 +852,105 @@ class TemplateHitFeaturizer:
             for pdb, v in data.items()
             if "release_date" in v
         }
+    
+
+    def parse_json_templates(self, template_list: List[Dict], query_sequence: str) -> TemplateSearchResult:
+        """
+        Extract templates from the given template information.
+
+        Args:
+            template_list: A list of dictionaries containing template information.
+            query_sequence: The query sequence.
+
+        Returns:
+            A TemplateSearchResult object.
+        """
+        features_list = []
+        hits = []
+        errors = []
+        warnings = []
+        
+        num_query = len(query_sequence)
+        
+        for idx, template_info in enumerate(template_list):
+            mmcif_str = template_info.get("mmcif", "")
+            q_indices = template_info.get("queryIndices", [])
+            t_indices = template_info.get("templateIndices", [])
+            
+            if not mmcif_str or len(q_indices) != len(t_indices):
+                errors.append(f"Invalid template info at index {idx}")
+                continue
+                
+            mapping = {q: t for q, t in zip(q_indices, t_indices)}
+            
+            try:
+                res = TemplateParser.parse_simple_cif(
+                    file_id=f"temp_{idx}", mmcif_string=mmcif_str
+                )
+                if not res.mmcif_object:
+                    errors.append(f"No mmcif object generated for index {idx}. Errors: {res.errors}")
+                    continue
+                
+                chain_ids = list(res.mmcif_object.chain_to_seqres.keys())
+                if not chain_ids:
+                    errors.append(f"No valid chain found in mmCIF at index {idx}")
+                    continue
+                chain_id = chain_ids[0]
+                template_seq = res.mmcif_object.chain_to_seqres[chain_id]
+                
+                all_pos, all_mask = self._hit_processor._get_atom_positions(
+                    res.mmcif_object, chain_id, 150.0, self._zero_center_positions
+                )
+            except Exception as e:
+                errors.append(f"Failed to parse mmCIF at index {idx}: {e}")
+                continue
+                
+            out_pos = np.zeros((num_query, ATOM37_NUM, 3), dtype=np.float32)
+            out_mask = np.zeros((num_query, ATOM37_NUM), dtype=np.float32)
+            out_seq = ["-"] * num_query
+
+            for q_idx, t_idx in mapping.items():
+                if t_idx != -1 and t_idx < len(all_pos) and q_idx < num_query:
+                    out_pos[q_idx] = all_pos[t_idx]
+                    out_mask[q_idx] = all_mask[t_idx]
+                    out_seq[q_idx] = template_seq[t_idx] if t_idx < len(template_seq) else "-"
+
+            out_seq_str = "".join(out_seq)
+            aatype = encode_template_restype(PROTEIN_CHAIN, out_seq_str)
+
+            features = {
+                "template_all_atom_positions": out_pos,
+                "template_all_atom_masks": out_mask,
+                "template_sequence": out_seq_str.encode(),
+                "template_aatype": np.array(aatype, dtype=np.int32),
+                "template_domain_names": np.array(
+                    f"temp_{idx}".encode(), dtype=object
+                ),
+                "template_sum_probs": [1.0],
+                "template_release_date": np.array(b"9999-12-31", dtype=object)
+            }
+            features_list.append(features)
+            
+            q_indices_hit = list(range(num_query))
+            h_indices_hit = [-1] * num_query
+            for q, t in mapping.items():
+                if q < num_query:
+                    h_indices_hit[q] = t
+            
+            hit = TemplateHit(
+                index=idx,
+                name=f"temp_{idx}",
+                aligned_cols=len(mapping),
+                sum_probs=1.0,
+                query=query_sequence,
+                hit_sequence=template_seq,
+                indices_query=q_indices_hit,
+                indices_hit=h_indices_hit,
+            )
+            hits.append(hit)
+            
+        return TemplateSearchResult(features=features_list, hits=hits, errors=errors, warnings=warnings)
+
 
     def get_templates(
         self,

@@ -136,6 +136,7 @@ cython_debug/
 wandb/
 output/
 release_data/
+debug/
 
 # --- RGI scratch / generated artifacts (restraint-guided inference) ---
 /input_*.yaml

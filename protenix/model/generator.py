@@ -17,6 +17,10 @@ from typing import Any, Callable, Optional
 import torch
 
 from protenix.model.utils import centre_random_augmentation
+from protenix.tfg import parse_tfg_config, TFGEngine
+from protenix.utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class TrainingNoiseSampler:
@@ -136,6 +140,7 @@ def sample_diffusion(
     attn_chunk_size: Optional[int] = None,
     enable_efficient_fusion: bool = False,
     combined_restraints: Optional[Any] = None,
+    guidance_configs: Optional[dict[str, Any]] = None,
 ) -> torch.Tensor:
     """Implements Algorithm 18 in AF3.
     It performances denoising steps from time 0 to time T.
@@ -167,6 +172,7 @@ def sample_diffusion(
         inplace_safe (bool): Whether to use inplace operations safely. Defaults to False.
         attn_chunk_size (Optional[int]): Chunk size for attention operation. Defaults to None.
         enable_efficient_fusion (bool): Whether to enable efficient fusion. Defaults to False.
+        guidance_configs (Optional[dict[str, Any]]): training free guidance configs. Defaults to None.
 
     Returns:
         torch.Tensor: the denoised coordinates of x in inference stage
@@ -176,6 +182,10 @@ def sample_diffusion(
     batch_shape = s_inputs.shape[:-2]
     device = s_inputs.device
     dtype = s_inputs.dtype
+    tfg_cfg = parse_tfg_config(guidance_configs)
+    if tfg_cfg.enable:
+        logger.info("Guidance is enabled.")
+        tfg = TFGEngine(tfg_cfg, device=device, dtype=dtype)
 
     def _chunk_sample_diffusion(chunk_n_sample, inplace_safe):
         # init noise
@@ -212,50 +222,72 @@ def sample_diffusion(
                 .to(dtype)
             )
 
-            x_denoised = denoise_net(
-                x_noisy=x_noisy,
-                t_hat_noise_level=t_hat,
-                input_feature_dict=input_feature_dict,
-                s_inputs=s_inputs,
-                s_trunk=s_trunk,
-                z_trunk=z_trunk,
-                pair_z=pair_z,
-                p_lm=p_lm,
-                c_l=c_l,
-                chunk_size=attn_chunk_size,
-                inplace_safe=inplace_safe,
-                enable_efficient_fusion=enable_efficient_fusion,
-            )
-
-            # restraint-guided inference (rgi_utils): nudge the denoised coords
-            # towards the restraints before the Euler step. Reshape
-            # (*batch, N_sample, N_atom, 3) -> (-1, N_atom, 3) for minimize.
-            if combined_restraints is not None:
-                sigma_t = float(c_tau_last)
-                _shape = x_denoised.shape
-                _flat = x_denoised.reshape(-1, _shape[-2], _shape[-1])
-                combined_restraints.minimize(_flat, step_i, sigma_t)
-                x_denoised = _flat.reshape(_shape)
-                # Align x_noisy to the nudged x_denoised BEFORE the Euler step, so the
-                # rigid drift between them doesn't warp the restraint. The step is
-                # x_l = x_noisy + step_scale*(c_tau - t_hat)*(x_noisy - x_denoised)/t_hat,
-                # i.e. roughly -0.5*x_noisy + 1.5*x_denoised on the last step; without the
-                # align a dihedral (cis/trans) nudge gets extrapolated back toward x_noisy.
-                # boltz does the same via alignment_reverse_diff. Restraint-only path.
-                from protenix.metrics.rmsd import weighted_rigid_align
-
-                _w = torch.ones(
-                    x_noisy.shape[-2], device=x_noisy.device, dtype=torch.float32
+            if tfg_cfg.enable:
+                x_l = tfg.step(
+                    denoise_net,
+                    x=x_noisy,
+                    t_hat=t_hat,
+                    input_feature_dict=input_feature_dict,
+                    s_inputs=s_inputs,
+                    s_trunk=s_trunk,
+                    z_trunk=z_trunk,
+                    pair_z=pair_z,
+                    p_lm=p_lm,
+                    c_l=c_l,
+                    chunk_size=attn_chunk_size,
+                    inplace_safe=inplace_safe,
+                    enable_efficient_fusion=enable_efficient_fusion,
+                    c_tau=c_tau,
+                    step_i=step_i,
+                    num_diffusion_steps=len(noise_schedule) - 1,
+                    step_scale_eta=step_scale_eta,
                 )
-                x_noisy = weighted_rigid_align(
-                    x_noisy.float(), x_denoised.float(), _w
-                ).to(x_noisy.dtype)
+            else:
+                x_denoised = denoise_net(
+                    x_noisy=x_noisy,
+                    t_hat_noise_level=t_hat,
+                    input_feature_dict=input_feature_dict,
+                    s_inputs=s_inputs,
+                    s_trunk=s_trunk,
+                    z_trunk=z_trunk,
+                    pair_z=pair_z,
+                    p_lm=p_lm,
+                    c_l=c_l,
+                    chunk_size=attn_chunk_size,
+                    inplace_safe=inplace_safe,
+                    enable_efficient_fusion=enable_efficient_fusion,
+                )
 
-            delta = (x_noisy - x_denoised) / t_hat[
-                ..., None, None
-            ]  # Line 9 of AF3 uses 'x_l_hat' instead, which we believe  is a typo.
-            dt = c_tau - t_hat
-            x_l = x_noisy + step_scale_eta * dt[..., None, None] * delta
+                # restraint-guided inference (rgi_utils): nudge the denoised coords
+                # towards the restraints before the Euler step. Reshape
+                # (*batch, N_sample, N_atom, 3) -> (-1, N_atom, 3) for minimize.
+                # Runs in the non-TFG path (guidance_configs=None when RGI is used).
+                if combined_restraints is not None:
+                    sigma_t = float(c_tau_last)
+                    _shape = x_denoised.shape
+                    _flat = x_denoised.reshape(-1, _shape[-2], _shape[-1])
+                    combined_restraints.minimize(_flat, step_i, sigma_t)
+                    x_denoised = _flat.reshape(_shape)
+                    # Align x_noisy to the nudged x_denoised BEFORE the Euler step, so the
+                    # rigid drift between them doesn't warp the restraint. The step is
+                    # x_l = x_noisy + step_scale*(c_tau - t_hat)*(x_noisy - x_denoised)/t_hat,
+                    # i.e. roughly -0.5*x_noisy + 1.5*x_denoised on the last step; without the
+                    # align a dihedral (cis/trans) nudge gets extrapolated back toward x_noisy.
+                    # boltz does the same via alignment_reverse_diff. Restraint-only path.
+                    from protenix.metrics.rmsd import weighted_rigid_align
+
+                    _w = torch.ones(
+                        x_noisy.shape[-2], device=x_noisy.device, dtype=torch.float32
+                    )
+                    x_noisy = weighted_rigid_align(
+                        x_noisy.float(), x_denoised.float(), _w
+                    ).to(x_noisy.dtype)
+
+                delta = (x_noisy - x_denoised) / t_hat[
+                    ..., None, None
+                ]  # Line 9 of AF3 uses 'x_l_hat' instead, which we believe  is a typo.
+                dt = c_tau - t_hat
+                x_l = x_noisy + step_scale_eta * dt[..., None, None] * delta
 
         return x_l
 

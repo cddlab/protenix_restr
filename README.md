@@ -1,3 +1,8 @@
+see [rgi_utils](https://github.com/cddlab/rgi_utils) for more information.
+
+<details>
+<summary>Original README</summary>
+
 # Protenix: Protein + X
 
 <div align="center" style="margin: 20px 0;">
@@ -218,3 +223,5 @@ The Protenix project including both code and model parameters is released under 
 ## Contact Us
 
 We welcome inquiries and collaboration opportunities for advanced applications of our model, such as developing new features, fine-tuning for specific use cases, and more. Please feel free to contact us at anewbt_mind@bytedance.com.
+
+</details>

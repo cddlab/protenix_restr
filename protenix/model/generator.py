@@ -272,7 +272,7 @@ def sample_diffusion(
                     # rigid drift between them doesn't warp the restraint. The step is
                     # x_l = x_noisy + step_scale*(c_tau - t_hat)*(x_noisy - x_denoised)/t_hat,
                     # i.e. roughly -0.5*x_noisy + 1.5*x_denoised on the last step; without the
-                    # align a dihedral (cis/trans) nudge gets extrapolated back toward x_noisy.
+                    # align a cistrans nudge gets extrapolated back toward x_noisy.
                     # boltz does the same via alignment_reverse_diff. Restraint-only path.
                     from protenix.metrics.rmsd import weighted_rigid_align
 

@@ -341,6 +341,8 @@ class TFGEngine:
         chunk_size: int | None,
         inplace_safe: bool,
         enable_efficient_fusion: bool,
+        combined_restraints: Any = None,
+        sigma_gate: float = 0.0,
     ) -> torch.Tensor:
         """Run one TFG-aware diffusion update: `x_t -> x_{t-1}`.
 
@@ -475,16 +477,33 @@ class TFGEngine:
                 # on energy E). The step size is `cfg.mu`.
                 x0_ref = x0_ref + grad_x0 * float(self.cfg.mu)
 
+            # 4b) restraint-guided inference (rgi_utils): after TFG has refined the
+            # x0 prediction, apply the user's RGI restraints to it (composition
+            # order TFG -> RGI). Then re-align the noisy anchor X = x_work + xt_shift
+            # onto the nudged x0 so the predictor-corrector step below does not
+            # extrapolate the nudge back toward the noisy coords. Mirrors the
+            # non-TFG path in generator.sample_diffusion. `sigma_gate` is the
+            # pre-churn schedule sigma (c_tau_last), matching RGI's gate elsewhere.
+            X = x_work + xt_shift
+            if combined_restraints is not None:
+                _shape = x0_ref.shape
+                _flat = x0_ref.reshape(-1, _shape[-2], _shape[-1])
+                combined_restraints.minimize(_flat, step_i, float(sigma_gate))
+                x0_ref = _flat.reshape(_shape)
+                # Align in float32 to avoid bf16 NaN in the SVD.
+                from protenix.metrics.rmsd import weighted_rigid_align
+
+                _w = torch.ones(X.shape[-2], device=X.device, dtype=torch.float32)
+                X = weighted_rigid_align(X.float(), x0_ref.float(), _w).to(x_work.dtype)
+
             # 5) predictor-corrector update
             # keep sign convention consistent with AF3 sampler
-            # `direction` is the normalized update direction implied by x0.
-            direction = (x_work + xt_shift - x0_ref) / t_hat[..., None, None]
+            # `direction` is the normalized update direction implied by x0. X replaces
+            # (x_work + xt_shift) in BOTH the base term and the direction numerator so
+            # the restraint nudge is not warped (half-fix guard).
+            direction = (X - x0_ref) / t_hat[..., None, None]
             dt = c_tau - t_hat
-            x_next = (
-                x_work
-                + xt_shift
-                + float(step_scale_eta) * dt[..., None, None] * direction
-            )
+            x_next = X + float(step_scale_eta) * dt[..., None, None] * direction
 
             # stochasticity
             # Inject noise so the marginal at the next noise level matches the

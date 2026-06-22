@@ -241,6 +241,8 @@ def sample_diffusion(
                     step_i=step_i,
                     num_diffusion_steps=len(noise_schedule) - 1,
                     step_scale_eta=step_scale_eta,
+                    combined_restraints=combined_restraints,
+                    sigma_gate=float(c_tau_last),
                 )
             else:
                 x_denoised = denoise_net(
@@ -261,7 +263,9 @@ def sample_diffusion(
                 # restraint-guided inference (rgi_utils): nudge the denoised coords
                 # towards the restraints before the Euler step. Reshape
                 # (*batch, N_sample, N_atom, 3) -> (-1, N_atom, 3) for minimize.
-                # Runs in the non-TFG path (guidance_configs=None when RGI is used).
+                # Non-TFG path. When TFG is enabled the identical RGI minimize runs
+                # inside tfg.step (step 4b, composed after TFG -> RGI), so RGI and TFG
+                # are no longer mutually exclusive -- both apply on every diffusion step.
                 if combined_restraints is not None:
                     sigma_t = float(c_tau_last)
                     _shape = x_denoised.shape

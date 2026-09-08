@@ -156,7 +156,7 @@ class SampleDictToFeatures:
                                 asym_chain_idx += 1
                                 break
                             asym_chain_idx += 1
-                    # restraint-guided inference (rgi_utils): record SMILES per chain
+                    # restraint-guided inference (rgi_toolkit): record SMILES per chain
                     # so the adapter can build a stereo-correct ideal conformer target.
                     if _is_smiles_lig:
                         self.smiles_by_chain[asym_id_str] = _lig
@@ -425,7 +425,7 @@ class SampleDictToFeatures:
             )
             feature_dict.update(geometry_featurizer.get_features())
 
-        # restraint-guided inference (rgi_utils): stash the atom_array and the
+        # restraint-guided inference (rgi_toolkit): stash the atom_array and the
         # restraints_config so the model can build CombinedRestraints later.
         # Non-tensor values are skipped by to_device and survive to the model.
         feature_dict["atom_array"] = atom_array

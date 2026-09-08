@@ -477,7 +477,7 @@ class TFGEngine:
                 # on energy E). The step size is `cfg.mu`.
                 x0_ref = x0_ref + grad_x0 * float(self.cfg.mu)
 
-            # 4b) restraint-guided inference (rgi_utils): after TFG has refined the
+            # 4b) restraint-guided inference (rgi_toolkit): after TFG has refined the
             # x0 prediction, apply the user's RGI restraints to it (composition
             # order TFG -> RGI). Then re-align the noisy anchor X = x_work + xt_shift
             # onto the nudged x0 so the predictor-corrector step below does not

@@ -260,7 +260,7 @@ def sample_diffusion(
                     enable_efficient_fusion=enable_efficient_fusion,
                 )
 
-                # restraint-guided inference (rgi_utils): nudge the denoised coords
+                # restraint-guided inference (rgi_toolkit): nudge the denoised coords
                 # towards the restraints before the Euler step. Reshape
                 # (*batch, N_sample, N_atom, 3) -> (-1, N_atom, 3) for minimize.
                 # Non-TFG path. When TFG is enabled the identical RGI minimize runs

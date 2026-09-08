@@ -398,7 +398,7 @@ def rdkit_mol_to_atom_array(mol: Chem.Mol, removeHs: bool = True) -> AtomArray:
         atom_array.coord[i, :] = coord[i, :]
 
     # Preserve RDKit bond order as the 3rd column (1=SINGLE, 2=DOUBLE, ...): a 2-col
-    # BondList defaults every order to 0 (BondType.ANY), which the rgi_utils cistrans
+    # BondList defaults every order to 0 (BondType.ANY), which the rgi_toolkit cistrans
     # featurizer reads as non-DOUBLE so cis/trans restraints silently vanish for a
     # SMILES ligand. Kekulize first so aromatic ring bonds become explicit single/
     # double (1/2) rather than GetBondTypeAsDouble()==1.5 -> int 1: the conformer
